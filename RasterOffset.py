@@ -30,7 +30,8 @@ from qgis.core import (
     QgsProject,
     QgsPathResolver,
     QgsRasterLayer,
-    QgsRasterFileWriter
+    QgsRasterFileWriter,
+    QgsRectangle
 )
 
 from qgis.gui import (
@@ -229,7 +230,8 @@ class RasterOffset:
 
     def do(self, layer, path_output, offset_x, offset_y):
         provider = layer.dataProvider()
-        extent = layer.extent()    
+        extent = layer.extent()
+        print(type(extent))
         crs = layer.crs()
         nb_bands = layer.bandCount()
         bands_values = []
@@ -239,31 +241,36 @@ class RasterOffset:
             block = layer.dataProvider().block(band_num, layer.extent(), cols, rows)
             band_value = numpy.array([[block.value(i, j) for j in range(cols)] for i in range(rows)])
             bands_values.append(band_value)
-        x_nb, y_nb = numpy.shape(bands_values[0])
-        x_values = numpy.linspace(extent.xMinimum(), extent.xMaximum(), x_nb) + offset_x
-        y_values = numpy.linspace(extent.yMinimum(), extent.yMaximum(), y_nb) + offset_y
+        shape = numpy.shape(bands_values[0])
+        x_nb, y_nb = shape
+        print(f"X: [{extent.xMinimum()}, {extent.xMaximum()}] ({x_nb})")
+        print(f"Y: [{extent.yMinimum()}, {extent.yMaximum()}] ({y_nb})")
         crs = layer.crs()
         nb_bands = len(bands_values)
         writer = QgsRasterFileWriter(path_output)
         provider = QgsRasterFileWriter.createMultiBandRaster(
             writer,
             dataType={"float32": Qgis.Float32, "float64": Qgis.Float64,}[bands_values[0].dtype.name],
-            width=x_values.size,
-            height=y_values.size,
-            extent=extent,
+            width=layer.width(),
+            height=layer.height(),
+            extent=QgsRectangle(
+                xMin=extent.xMinimum() + offset_x,
+                yMin=extent.yMinimum() + offset_y,
+                xMax=extent.xMaximum() + offset_x,
+                yMax=extent.yMaximum() + offset_y),
             crs=crs,
             nBands=nb_bands
         )
         provider.setEditable(True)
         for band_num in range(1, nb_bands+1):
-            provider.setNoDataValue(band_number, -1)
+            provider.setNoDataValue(band_num, -1)
             block = provider.block(
                 bandNo=band_num,
                 boundingBox=provider.extent(),
-                width=provider.xSize(),
-                height=provider.ySize(),
+                width=layer.width(),
+                height=layer.height(),
             )
-            block.setData(bands_values[band_num-1].tobytes())
+            block.setData(bands_values[band_num-1].T.tobytes())
             provider.writeBlock(
                 block=block,
                 band=band_num,
