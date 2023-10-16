@@ -23,7 +23,19 @@
 """
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtWidgets import QAction, QFileDialog
+import numpy
+from qgis.core import (
+    Qgis,
+    QgsProject,
+    QgsPathResolver,
+    QgsRasterLayer,
+    QgsRasterFileWriter
+)
+
+from qgis.gui import (
+    QgsLayerTreeMapCanvasBridge,
+)
 
 # Initialize Qt resources from file resources.py
 from .resources import *
@@ -190,11 +202,70 @@ class RasterOffset:
             self.dlg = RasterOffsetDialog()
 
         # show the dialog
+        self.dlg.comboBox_raster.clear()
+        layers = QgsProject.instance().mapLayers()
+        for layer_key, layer in layers.items():
+            if not isinstance(QgsProject.instance().mapLayers()[layer_key], QgsRasterLayer):
+                continue
+            if not os.path.isfile(str(layer.source())):
+                continue
+            self.dlg.comboBox_raster.addItem(layer_key)
+        self.dlg.pushButton_outputpath.clicked.connect(lambda: self.dlg.lineEdit_pathOutput.setText(QFileDialog.getSaveFileName(filter='*.tif')[0]))
         self.dlg.show()
-        # Run the dialog event loop
         result = self.dlg.exec_()
-        # See if OK was pressed
         if result:
-            # Do something useful here - delete the line containing pass and
-            # substitute with your code.
-            pass
+            layer_input = self.dlg.comboBox_raster.currentText()
+            layer_obj = layers[layer_input]
+            path_input = layer_obj.source()
+            offset_x = self.dlg.doubleSpinBox_offset_x.value()
+            offset_y = self.dlg.doubleSpinBox_offset_y.value()
+            path_output = self.dlg.lineEdit_pathOutput.text()
+            
+            # if not os.path.isdir(os.path.dirname(path_output)):
+                # raise Exception("Not valid directory path output")
+            # if not path_output.endswith(".tif"):
+                # raise Exception("Not valid extension path output")
+            self.do(layer_obj, path_output, offset_x, offset_y)
+
+    def do(self, layer, path_output, offset_x, offset_y):
+        provider = layer.dataProvider()
+        extent = layer.extent()    
+        crs = layer.crs()
+        nb_bands = layer.bandCount()
+        bands_values = []
+        for band_num in range(1, nb_bands+1):
+            rows = layer.height()
+            cols = layer.width()
+            block = layer.dataProvider().block(band_num, layer.extent(), cols, rows)
+            band_value = numpy.array([[block.value(i, j) for j in range(cols)] for i in range(rows)])
+            bands_values.append(band_value)
+        x_nb, y_nb = numpy.shape(bands_values[0])
+        x_values = numpy.linspace(extent.xMinimum(), extent.xMaximum(), x_nb) + offset_x
+        y_values = numpy.linspace(extent.yMinimum(), extent.yMaximum(), y_nb) + offset_y
+        crs = layer.crs()
+        nb_bands = len(bands_values)
+        writer = QgsRasterFileWriter(path_output)
+        provider = QgsRasterFileWriter.createMultiBandRaster(
+            writer,
+            dataType={"float32": Qgis.Float32, "float64": Qgis.Float64,}[bands_values[0].dtype.name],
+            width=x_values.size,
+            height=y_values.size,
+            extent=extent,
+            crs=crs,
+            nBands=nb_bands
+        )
+        provider.setEditable(True)
+        for band_num in range(1, nb_bands+1):
+            provider.setNoDataValue(band_number, -1)
+            block = provider.block(
+                bandNo=band_num,
+                boundingBox=provider.extent(),
+                width=provider.xSize(),
+                height=provider.ySize(),
+            )
+            block.setData(bands_values[band_num-1].tobytes())
+            provider.writeBlock(
+                block=block,
+                band=band_num,
+            )
+        provider.setEditable(False)
